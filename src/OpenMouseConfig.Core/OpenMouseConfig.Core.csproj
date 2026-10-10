@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    UI-free core library: devices.json model + validation, the payload engine (hex templates,
+    field injection, checksums), the HID abstraction and its native Windows implementation.
+
+    It deliberately targets plain net10.0 (not net10.0-windows) so the protocol logic and its
+    unit tests run on any OS. The Windows HID code is annotated with [SupportedOSPlatform("windows")].
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>OpenMouseConfig.Core</RootNamespace>
+    <!-- Needed for the overlapped ReadFile/WriteFile interop in Hid/Windows/HidDevice.cs. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="OpenMouseConfig.Core.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- WPF front end (MVVM). All device logic lives in OpenMouseConfig.Core. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>OpenMouseConfig</AssemblyName>
+    <RootNamespace>OpenMouseConfig</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- Keep publish output lean: no localized framework resource folders. -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- ObservableObject / [ObservableProperty] / [RelayCommand] source generators. -->
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OpenMouseConfig.Core\OpenMouseConfig.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The bundled device definitions live at the repo root and are copied next to the .exe. -->
+    <None Include="..\..\devices.json" Link="devices.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

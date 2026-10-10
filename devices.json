@@ -1,0 +1,193 @@
+// =====================================================================================
+//  OpenMouseConfig — device definitions
+//
+//  Everything device-specific lives here: USB identity, report format and the byte
+//  layout of every command. Add a mouse = add an entry; no recompiling.
+//
+//  • This file ships next to OpenMouseConfig.exe and is replaced on every update.
+//    Put your own definitions in  %APPDATA%\OpenMouseConfig\devices\*.json  instead
+//    (same format). An entry there with the same "id" overrides the one here.
+//  • // comments and trailing commas are allowed.
+//  • Integers can be written as numbers (26000) or hex strings ("0x6590").
+//  • Payload hex: BYTE 0 IS THE REPORT ID — exactly as Wireshark shows the data of a
+//    SET_REPORT. Bytes that carry a setting can stay 00; "fields" overwrite them.
+//    Payloads are zero-padded to the device's report length automatically.
+//
+//  Full reference + capture how-to: README.md → "devices.json reference".
+// =====================================================================================
+{
+  "schemaVersion": 1,
+  "devices": [
+    {
+      "id": "gwolves-hts-plus-pro-8k",
+      "name": "G-Wolves HTS Plus Pro 8K",
+      "manufacturer": "G-Wolves",
+
+      // Keep this false until every payload below has been compared with a real capture.
+      // While false the app forces DRY-RUN: packets are built and logged, never sent.
+      "verified": false,
+      "notes": "PLACEHOLDER definition. VID/PID, usage page and all payloads must be replaced with values captured from mouse.xyz (README → How to add a mouse).",
+
+      // ---------------------------------------------------------------------------
+      // USB identities. Find them in the app (Developer console → "List HID interfaces"),
+      // Device Manager (Hardware Ids) or Wireshark. usagePage/usageId pick the vendor
+      // configuration collection — the same filter mouse.xyz passes to WebHID.
+      // ---------------------------------------------------------------------------
+      "match": [
+        { "label": "8K Wireless Receiver", "vendorId": "0x1234", "productId": "0x5678", "usagePage": "0xFF00", "usageId": "0x0001" }, // PLACEHOLDER
+        { "label": "Wired (USB-C)",        "vendorId": "0x1234", "productId": "0x5679", "usagePage": "0xFF00", "usageId": "0x0001" }  // PLACEHOLDER
+      ],
+
+      // ---------------------------------------------------------------------------
+      // How packets travel.
+      //   reportType   "feature" = SET_REPORT control transfer (WebHID sendFeatureReport)
+      //                "output"  = interrupt OUT / WriteFile    (WebHID sendReport)
+      //   responseType "feature" = GET_REPORT (receiveFeatureReport)
+      //                "input"   = next matching input report (inputreport event)
+      //   reportLength only used for dry-run without the mouse attached; when the mouse is
+      //                connected, Windows' own report size (HIDP_CAPS) is used.
+      // ---------------------------------------------------------------------------
+      "transport": {
+        "reportType": "feature",
+        "responseType": "feature",
+        "reportLength": 64,
+        "responseTimeoutMs": 1000,
+        "responseDelayMs": 5,
+        "responseRetries": 3,
+        "interCommandDelayMs": 15,
+
+        // No checksum yet. Common alternatives once you know the protocol:
+        //   { "type": "sum8",           "index": -1, "start": 1 }                 // Σ bytes & 0xFF in last byte
+        //   { "type": "xor8",           "index": -1, "start": 1 }
+        //   { "type": "sumComplement8", "index": 15, "start": 0, "end": 14, "initial": "0x55" } // 0x55 − Σ
+        "checksum": { "type": "none" }
+      },
+
+      // ---------------------------------------------------------------------------
+      // What the UI offers. A control is enabled only if its capability is declared
+      // here AND the matching command exists below.
+      // ---------------------------------------------------------------------------
+      "capabilities": {
+        "pollingRates": [125, 250, 500, 1000, 2000, 4000, 8000],
+        "dpi": { "min": 50, "max": 26000, "step": 50, "stages": 4 },
+        "debounce": { "min": 0, "max": 20, "step": 1 },
+        "liftOffDistances": [1, 2],
+        "motionSync": true,
+        "battery": true
+      },
+
+      // Values shown before anything is read back from the mouse.
+      "defaults": {
+        "pollingRate": 1000,
+        "dpiStages": [400, 800, 1600, 3200],
+        "activeStage": 2,
+        "debounce": 2,
+        "liftOffDistance": 1,
+        "motionSync": false
+      },
+
+      // Commands run right after connecting (reads), and after every setting change.
+      "onConnect": ["getSettings", "getBattery"],
+      "commitCommand": "saveSettings",
+      "batteryPollSeconds": 60,
+
+      // ---------------------------------------------------------------------------
+      // Commands. Every PLACEHOLDER layout below follows the same invented scheme:
+      //   byte 0 = report ID (0x05) · byte 1 = command ID · bytes 2.. = data
+      //
+      // Field rules:  raw = map[value]   or   raw = round(value × multiply ÷ divide) + add
+      //   "index"  byte offset (0 = report ID)     "size"  1-4 bytes
+      //   "endian" "little" (default) | "big"      "mask"/"shift"  for bit fields
+      //
+      // Variables every command can use: value, pollingRate, dpi1..dpi4, activeStage,
+      // stageCount, debounce, liftOffDistance, motionSync (0/1).
+      // setDpiStage additionally gets: stage (1-based) and dpi.
+      // ---------------------------------------------------------------------------
+      "commands": {
+        "setPollingRate": {
+          "description": "PLACEHOLDER: byte 2 = rate code",
+          "payload": "05 01 00",
+          "fields": [
+            {
+              "name": "value", "index": 2,
+              "map": { "125": "0x08", "250": "0x04", "500": "0x02", "1000": "0x01", "2000": "0x10", "4000": "0x20", "8000": "0x40" }
+            }
+          ]
+        },
+
+        "setDpiStage": {
+          "description": "PLACEHOLDER: byte 2 = stage (0-based), bytes 3-4 = X DPI/50, bytes 5-6 = Y DPI/50 (little endian)",
+          "payload": "05 02 00 00 00 00 00",
+          "fields": [
+            { "name": "stage", "index": 2, "add": -1 },
+            { "name": "dpi",   "index": 3, "size": 2, "endian": "little", "divide": 50 },
+            { "name": "dpi",   "index": 5, "size": 2, "endian": "little", "divide": 50 }
+          ]
+        },
+
+        "setActiveDpiStage": {
+          "description": "PLACEHOLDER: byte 2 = active stage (0-based)",
+          "payload": "05 03 00",
+          "fields": [ { "name": "activeStage", "index": 2, "add": -1 } ]
+        },
+
+        "setDebounce": {
+          "description": "PLACEHOLDER: byte 2 = debounce in ms",
+          "payload": "05 04 00",
+          "fields": [ { "name": "value", "index": 2 } ]
+        },
+
+        "setLiftOffDistance": {
+          "description": "PLACEHOLDER: byte 2 = 0x00 for 1 mm, 0x01 for 2 mm",
+          "payload": "05 05 00",
+          "fields": [ { "name": "value", "index": 2, "map": { "1": "0x00", "2": "0x01" } } ]
+        },
+
+        "setMotionSync": {
+          "description": "PLACEHOLDER: byte 2 = 0x00 off / 0x01 on",
+          "payload": "05 06 00",
+          "fields": [ { "name": "value", "index": 2, "map": { "off": "0x00", "on": "0x01" } } ]
+        },
+
+        "saveSettings": {
+          "description": "PLACEHOLDER: commit to onboard memory (sent after every change via commitCommand)",
+          "payload": "05 0F 01"
+        },
+
+        "getBattery": {
+          "description": "PLACEHOLDER: reply byte 2 = battery %, bit 0 of byte 3 = charging",
+          "payload": "05 10",
+          "response": {
+            "expect": "05 10",
+            "fields": [
+              { "name": "battery",  "index": 2 },
+              { "name": "charging", "index": 3, "mask": "0x01" }
+            ]
+          }
+        },
+
+        "getSettings": {
+          "description": "PLACEHOLDER: read the whole current configuration in one reply",
+          "payload": "05 11",
+          "response": {
+            "expect": "05 11",
+            "fields": [
+              {
+                "name": "pollingRate", "index": 2,
+                "map": { "125": "0x08", "250": "0x04", "500": "0x02", "1000": "0x01", "2000": "0x10", "4000": "0x20", "8000": "0x40" }
+              },
+              { "name": "dpi1", "index": 3,  "size": 2, "divide": 50 },
+              { "name": "dpi2", "index": 5,  "size": 2, "divide": 50 },
+              { "name": "dpi3", "index": 7,  "size": 2, "divide": 50 },
+              { "name": "dpi4", "index": 9,  "size": 2, "divide": 50 },
+              { "name": "activeStage",     "index": 11, "add": -1 },
+              { "name": "debounce",        "index": 12 },
+              { "name": "liftOffDistance", "index": 13, "map": { "1": "0x00", "2": "0x01" } },
+              { "name": "motionSync",      "index": 14, "mask": "0x01" }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}
