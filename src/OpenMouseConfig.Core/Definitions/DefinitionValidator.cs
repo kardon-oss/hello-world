@@ -53,7 +53,11 @@ public static class DefinitionValidator
 
         foreach (var name in d.OnConnect)
         {
-            if (!d.HasCommand(name))
+            if (name is null)
+            {
+                errors.Add("onConnect contains null.");
+            }
+            else if (!d.HasCommand(name))
             {
                 errors.Add($"onConnect references unknown command \"{name}\".");
             }
@@ -117,6 +121,12 @@ public static class DefinitionValidator
         {
             var m = d.Match[i];
             var where = $"match[{i}]";
+            if (m is null)
+            {
+                errors.Add($"{where} is null.");
+                continue;
+            }
+
             WarnUnknown(m, where, warnings);
 
             if (m.VendorId is < 0 or > 0xFFFF)
@@ -165,15 +175,27 @@ public static class DefinitionValidator
         if (t.Checksum is { } c)
         {
             WarnUnknown(c, "transport.checksum", warnings);
-            if (c.Type != ChecksumType.None && t.ReportLength is { } len)
+            if (c.Type != ChecksumType.None)
             {
-                try
+                // Without a reportLength only the length-independent rules (start <= end, checksum
+                // byte outside its own range) can be checked; a nominal length makes bounds pass.
+                int? checkLength = t.ReportLength
+                    ?? (c.Index >= 0 && c.Start >= 0 && c.End is null or >= 0 ? Math.Max(c.Index, c.End ?? 0) + 1 : null);
+                if (checkLength is { } len)
                 {
-                    Checksum.ResolveRange(c, len);
+                    try
+                    {
+                        Checksum.ResolveRange(c, len);
+                    }
+                    catch (PayloadException ex)
+                    {
+                        errors.Add($"transport.checksum: {ex.Message}");
+                    }
                 }
-                catch (PayloadException ex)
+
+                if (t.ReportLength is null)
                 {
-                    errors.Add($"transport.checksum: {ex.Message}");
+                    warnings.Add("transport.checksum is set but transport.reportLength is not: offline dry-run can't place the checksum. Set reportLength.");
                 }
             }
         }
@@ -248,7 +270,18 @@ public static class DefinitionValidator
 
         for (int i = 0; i < command.Fields.Count; i++)
         {
-            ValidateField($"{where}.fields[{i}]", command.Fields[i], reportLength, errors, warnings);
+            var field = command.Fields[i];
+            if (field is null)
+            {
+                errors.Add($"{where}.fields[{i}] is null.");
+                continue;
+            }
+
+            ValidateField($"{where}.fields[{i}]", field, reportLength, errors, warnings);
+            if (reportLength is null && field.Index >= 0 && field.Index + field.Size > template.Length)
+            {
+                warnings.Add($"{where}.fields[{i}] lies past the end of the payload; set transport.reportLength so offline dry-run can build this command.");
+            }
         }
 
         if (command.Response is { } response)
@@ -268,9 +301,22 @@ public static class DefinitionValidator
                 errors.Add($"{where}.response.reportId must be a byte.");
             }
 
+            if (response.TimeoutMs is < 1)
+            {
+                errors.Add($"{where}.response.timeoutMs must be positive.");
+            }
+
+            // Feature replies have the same size as the feature report, so their fields can be bounds-checked.
+            var responseLength = (response.Type ?? d.Transport.ResponseType) == ResponseKind.Feature ? reportLength : null;
             for (int i = 0; i < response.Fields.Count; i++)
             {
-                ValidateField($"{where}.response.fields[{i}]", response.Fields[i], null, errors, warnings);
+                if (response.Fields[i] is null)
+                {
+                    errors.Add($"{where}.response.fields[{i}] is null.");
+                    continue;
+                }
+
+                ValidateField($"{where}.response.fields[{i}]", response.Fields[i], responseLength, errors, warnings);
             }
         }
     }
@@ -286,7 +332,7 @@ public static class DefinitionValidator
 
         if (f.Index < 0)
         {
-            errors.Add($"{where}.index cannot be negative.");
+            errors.Add($"{where}: \"index\" is missing or negative (byte 0 is the report ID).");
         }
 
         if (f.Size is < 1 or > 4)

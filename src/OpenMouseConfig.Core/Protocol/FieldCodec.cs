@@ -78,7 +78,8 @@ public static class FieldCodec
         {
             throw new PayloadException(
                 $"'{field.Name}' = {value.ToString(CultureInfo.InvariantCulture)} becomes raw {raw}, which does not fit " +
-                $"(allowed raw range 0..{maxRaw} at byte {field.Index}). Check multiply/divide/add or size.");
+                $"mask 0x{mask:X} after << {field.Shift} at byte {field.Index}. Check multiply/divide/add, size, mask or shift " +
+                "(a mask for a high bit needs the matching \"shift\").");
         }
 
         long current = ReadUnsigned(report, field.Index, field.Size, field.Endian);

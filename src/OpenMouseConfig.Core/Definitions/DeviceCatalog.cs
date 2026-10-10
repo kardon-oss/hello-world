@@ -74,8 +74,15 @@ public sealed class DeviceCatalog
             }
             catch (JsonException ex)
             {
-                // ex.Message already contains "Path: $.devices[0]... | LineNumber: 12 | BytePositionInLine: 8".
-                messages.Add(new(CatalogSeverity.Error, fileName, $"Invalid JSON — file skipped. {ex.Message}"));
+                // Syntax errors already end with "Path: … | LineNumber: … | BytePositionInLine: …";
+                // errors thrown by our converters (bad hex number…) carry the location only as properties.
+                var text = ex.Message;
+                if (ex.Path is not null && !text.Contains("LineNumber", StringComparison.Ordinal))
+                {
+                    text += $" Path: {ex.Path} | LineNumber: {ex.LineNumber} | BytePositionInLine: {ex.BytePositionInLine}.";
+                }
+
+                messages.Add(new(CatalogSeverity.Error, fileName, $"Invalid JSON — file skipped. {text}"));
                 continue;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -108,7 +115,15 @@ public sealed class DeviceCatalog
                 var source = $"{fileName} › {(string.IsNullOrWhiteSpace(device.Id) ? $"devices[{i}]" : device.Id)}";
                 var errors = new List<string>();
                 var warnings = new List<string>();
-                DefinitionValidator.Validate(device, errors, warnings);
+                try
+                {
+                    DefinitionValidator.Validate(device, errors, warnings);
+                }
+                catch (Exception ex)
+                {
+                    // Backstop: a construct the validator didn't anticipate must cost this device only.
+                    errors.Add($"Could not validate definition: {ex.Message}");
+                }
 
                 messages.AddRange(warnings.Select(w => new CatalogMessage(CatalogSeverity.Warning, source, w)));
                 if (errors.Count > 0)

@@ -24,6 +24,8 @@ internal static class NativeMethods
     public const uint OpenExisting = 3;
     public const uint FileFlagOverlapped = 0x40000000;
 
+    public const int ErrorAccessDenied = 5;
+    public const int ErrorOperationAborted = 995;
     public const int ErrorIoPending = 997;
     public const int HidpStatusSuccess = 0x00110000;
 

@@ -294,7 +294,7 @@ Use this when there is no website, or when you want to see exactly what goes ove
 4. Show only configuration traffic for that device:
 
    ```
-   usb.bus_id == 1 && usb.device_address == 7 && (usbhid.setup.bRequest == 0x09 || usbhid.setup.bRequest == 0x01 || (usb.transfer_type == 0x01 && usb.endpoint_address.direction == 0))
+   usb.bus_id == 1 && usb.device_address == 7 && (usb.transfer_type == 0x02 || usb.transfer_type == 0x01)
    ```
 
    | Packet | Meaning | devices.json |
@@ -353,9 +353,10 @@ example `commands.setDpiStage.fields[1]: index 70 + size 2 exceeds transport.rep
 
 1. With dry-run on, change each setting in OpenMouseConfig and compare the `TX` lines in the
    console with your capture. They must match byte for byte (zero padding is shown as `… (+N × 00)`).
-2. Use the **raw sender** to replay one captured packet and confirm the mouse reacts. Turn on
-   *Read reply* to see what it answers.
-3. Turn dry-run off (you'll be asked to confirm), then try each control.
+2. Turn dry-run off (you'll be asked to confirm). Use the **raw sender** to replay one captured
+   packet and confirm the mouse reacts. Turn on *Read reply* to see what it answers. The raw sender
+   respects dry-run, which is why this comes after switching it off.
+3. Try each control.
 4. Once everything works, set `"verified": true`. The banner disappears and dry-run is no longer
    forced on.
 
@@ -408,9 +409,9 @@ don't fail silently. Keys starting with `_` or `$` (such as `"_comment"`) are ig
 | `reportType` | `"feature"` | How commands are sent: `"feature"` (`HidD_SetFeature`, WebHID `sendFeatureReport`) or `"output"` (`WriteFile`, WebHID `sendReport`). |
 | `responseType` | `"feature"` | How replies are read: `"feature"` (`HidD_GetFeature`) or `"input"` (next matching input report). |
 | `reportLength` | — | Report size **including** the report-ID byte. Only used offline; a connected device's real size (HIDP_CAPS) always wins. |
-| `responseTimeoutMs` | 1000 | How long to wait for a matching reply. |
-| `responseDelayMs` | 0 | Pause between sending a command and its GET_FEATURE. |
-| `responseRetries` | 3 | Extra GET_FEATURE attempts while the reply doesn't match `expect`. |
+| `responseTimeoutMs` | 1000 | How long to wait for a matching **input** report. For feature replies it only caps the retry loop below. |
+| `responseDelayMs` | 0 | Pause before each GET_FEATURE (at least 5 ms between retries). |
+| `responseRetries` | 3 | Extra GET_FEATURE attempts while the reply doesn't match `expect`. A feature reply is given up after `responseRetries + 1` reads, so raise this or `responseDelayMs` for devices that answer slowly (e.g. through a wireless receiver). |
 | `interCommandDelayMs` | 10 | Pause after every command. |
 | `checksum` | none | See [checksum](#checksum). |
 
@@ -480,7 +481,7 @@ change (after `raw << shift`). Responses are decoded with the exact inverse.
 | Key | Default | Description |
 |---|---|---|
 | `name` | — | Variable to write, or the name to store a decoded value under. |
-| `index` | — | Byte offset (0 = report ID). |
+| `index` | **required** | Byte offset (0 = report ID). |
 | `size` | 1 | 1–4 bytes. |
 | `endian` | `"little"` | `"little"` or `"big"` for multi-byte values. |
 | `multiply`, `divide`, `add` | 1, 1, 0 | Linear transform, e.g. DPI/50 → `"divide": 50`; 0-based stages → `"add": -1`. |
@@ -497,7 +498,7 @@ Values that don't fit are rejected with an error rather than silently truncated.
 | `reportId` | Report ID for GET_FEATURE. Defaults to the command's byte 0. |
 | `expect` | Hex prefix the reply must start with, with `??` wildcards, e.g. `"05 90 ??"`. Other reports are skipped. |
 | `fields` | Values to decode (same keys as above). Names matching settings (`pollingRate`, `dpi2`, `motionSync`, …) update the UI; `battery` and `charging` update the header. |
-| `timeoutMs` | Overrides `transport.responseTimeoutMs`. |
+| `timeoutMs` | Overrides `transport.responseTimeoutMs` (same scope: input replies). |
 
 ### checksum
 

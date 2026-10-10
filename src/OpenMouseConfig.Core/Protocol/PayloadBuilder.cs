@@ -60,8 +60,14 @@ public static class PayloadBuilder
             FieldCodec.Encode(report, field, value);
         }
 
-        if (checksum is not null)
+        if (checksum is { Type: not ChecksumType.None })
         {
+            if (reportLength <= 0)
+            {
+                throw new PayloadException(
+                    "Can't place the checksum: the report length is unknown. Set transport.reportLength (needed for offline dry-run).");
+            }
+
             Checksum.Apply(report, checksum);
         }
 

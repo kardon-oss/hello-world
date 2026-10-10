@@ -14,6 +14,8 @@
 [CmdletBinding()]
 param(
     [string] $Version = "0.1.0",
+    # The .iss only packages an x64 build, so that's the only runtime accepted here.
+    [ValidateSet("win-x64")]
     [string] $Runtime = "win-x64",
     [switch] $SkipTests
 )
@@ -48,13 +50,16 @@ Invoke-Step "Publishing $Runtime build $Version" {
 $iscc = (Get-Command "iscc.exe" -ErrorAction SilentlyContinue).Source
 if (-not $iscc) {
     $iscc = @(
+        "$env:ProgramFiles\Inno Setup 7\ISCC.exe",
+        "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
+        "$env:LOCALAPPDATA\Programs\Inno Setup 7\ISCC.exe",
         "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
         "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
         "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
     ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 }
 if (-not $iscc) {
-    throw "ISCC.exe not found. Install Inno Setup 6.3+ (winget install JRSoftware.InnoSetup) or add it to PATH."
+    throw "ISCC.exe not found. Install Inno Setup 6.3 or newer (winget install JRSoftware.InnoSetup) or add it to PATH."
 }
 
 Invoke-Step "Compiling installer" {

@@ -45,8 +45,14 @@ public partial class App : Application
         MainWindow = window;
         window.Show();
 
-        _ = viewModel.InitializeAsync();
+        StartAsync(viewModel);
     }
+
+    /// <summary>
+    /// async void on purpose: an exception during startup is posted to the dispatcher and lands in
+    /// <see cref="OnUnhandledException"/> (logged + dialog) instead of vanishing in a discarded task.
+    /// </summary>
+    private static async void StartAsync(MainViewModel viewModel) => await viewModel.InitializeAsync();
 
     /// <summary>Last line of defence: log it, tell the user, keep running.</summary>
     private void OnUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)

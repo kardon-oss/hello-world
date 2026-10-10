@@ -52,6 +52,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private MouseController? _controller;
     private CancellationTokenSource? _sessionCts;
     private MouseSettings _settings = new();
+
+    /// <summary>Last values the mouse actually accepted (or reported). This, not the UI state, is persisted.</summary>
+    private MouseSettings _applied = new();
     private bool _applyingState;
     private bool _initialized;
 
@@ -138,8 +141,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     /// <summary>Build and log packets without sending them.</summary>
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsSimulating))]
+    [NotifyPropertyChangedFor(nameof(IsSimulating), nameof(UnverifiedBannerText))]
     private bool _dryRun;
+
+    /// <summary>True while the onConnect reads run; the settings cards are disabled meanwhile so edits can't race the read-back.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanEdit))]
+    private bool _isReadingBack;
 
     /// <summary>List every definition as an "offline" device so the UI and payloads can be tested without hardware.</summary>
     [ObservableProperty]
@@ -180,6 +188,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public bool ShowUnverifiedBanner => HasSession && SelectedDevice is { IsVerified: false };
 
+    public string UnverifiedBannerText => DryRun
+        ? "This mouse's payloads in devices.json are placeholders or unconfirmed, so dry-run is on: packets appear in the developer console instead of being sent. Compare them with your Wireshark capture, then set \"verified\": true."
+        : "Dry-run is OFF: packets built from this unconfirmed definition ARE being sent to the mouse. Turn dry-run back on if anything looks wrong.";
+
+    public bool CanEdit => !IsReadingBack;
+
     public string EmptyStateTitle => ConnectionState switch
     {
         ConnectionState.Connecting => "Connecting…",
@@ -201,8 +215,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ShowOfflineDevices = _store.Settings.ShowOfflineDevices;
         IsConsoleExpanded = _store.Settings.ConsoleExpanded;
         _log.Info($"Definitions: {_paths.BundledDefinitionsFile} + {_paths.UserDefinitionsDirectory}\\*.json");
-        LoadCatalog();
-        _initialized = true;
+        try
+        {
+            LoadCatalog();
+        }
+        finally
+        {
+            _initialized = true; // even after a failed load, plug events and Reload must keep working
+        }
+
         await RefreshDevicesAsync();
     }
 
@@ -271,11 +292,33 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 ?? Devices.FirstOrDefault(d => d.Device.Definition.Id == lastId)
                 ?? Devices.FirstOrDefault();
         }
+        else if (ConnectionState == ConnectionState.Error)
+        {
+            _ = ConnectAsync(SelectedDevice); // Rescan/F5 or a plug event retries a failed open
+        }
+        else if (_controller is { IsDeviceGone: true })
+        {
+            // Unplugged and re-plugged within the rescan delay: same path, but our handle is dead.
+            _log.Warn($"{SelectedDevice.DisplayName} was reconnected; reopening it.");
+            _ = ConnectAsync(SelectedDevice);
+        }
     }
 
     private void LoadCatalog()
     {
-        _catalog = DeviceCatalog.Load(_paths.GetDefinitionFiles());
+        try
+        {
+            _catalog = DeviceCatalog.Load(_paths.GetDefinitionFiles());
+        }
+        catch (Exception ex)
+        {
+            _catalog = DeviceCatalog.Empty;
+            _log.Error($"Loading device definitions failed: {ex.Message}");
+            DefinitionsSummary = "Loading device definitions failed, see console";
+            IsConsoleExpanded = true;
+            return;
+        }
+
         foreach (var message in _catalog.Messages)
         {
             var kind = message.Severity switch
@@ -382,6 +425,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ConfigureControls(definition);
         _settings = _store.GetProfile(definition.Id) ?? MouseSettings.CreateDefault(definition);
         _settings.Normalize(definition);
+        _applied = _settings.Clone();
         PushSettingsToUi();
         HasSession = true;
 
@@ -430,6 +474,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
 
         HasSession = false;
+        IsReadingBack = false;
         Features = DeviceFeatures.None;
         BatteryPercent = null;
         IsCharging = false;
@@ -514,7 +559,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
 
         _settings.PollingRate = value.Value;
-        QueueWrite("pollingRate", ClickDelay, $"Polling rate {value} Hz", (c, s, ct) => c.SetPollingRateAsync(s, ct));
+        QueueWrite("pollingRate", ClickDelay, $"Polling rate {value} Hz", (c, s, ct) => c.SetPollingRateAsync(s, ct),
+            (sent, applied) => applied.PollingRate = sent.PollingRate);
     }
 
     private void OnStageDpiChanged(DpiStageViewModel stage)
@@ -525,7 +571,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
 
         _settings.DpiStages[stage.Number - 1] = stage.Dpi;
-        QueueWrite($"dpi{stage.Number}", SliderDelay, $"DPI stage {stage.Number} → {stage.Dpi:N0}", (c, s, ct) => c.SetDpiStageAsync(s, stage.Number, ct));
+        QueueWrite($"dpi{stage.Number}", SliderDelay, $"DPI stage {stage.Number} → {stage.Dpi:N0}", (c, s, ct) => c.SetDpiStageAsync(s, stage.Number, ct),
+            (sent, applied) => applied.DpiStages[stage.Number - 1] = sent.DpiStages[stage.Number - 1]);
     }
 
     private void OnStageActivated(DpiStageViewModel stage)
@@ -543,7 +590,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _settings.ActiveStage = stage.Number;
         if (Features.ActiveStage)
         {
-            QueueWrite("activeStage", ClickDelay, $"Active DPI stage {stage.Number}", (c, s, ct) => c.SetActiveDpiStageAsync(s, ct));
+            QueueWrite("activeStage", ClickDelay, $"Active DPI stage {stage.Number}", (c, s, ct) => c.SetActiveDpiStageAsync(s, ct),
+                (sent, applied) => applied.ActiveStage = sent.ActiveStage);
         }
     }
 
@@ -555,7 +603,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
 
         _settings.Debounce = value;
-        QueueWrite("debounce", SliderDelay, $"Debounce {value} ms", (c, s, ct) => c.SetDebounceAsync(s, ct));
+        QueueWrite("debounce", SliderDelay, $"Debounce {value} ms", (c, s, ct) => c.SetDebounceAsync(s, ct),
+            (sent, applied) => applied.Debounce = sent.Debounce);
     }
 
     partial void OnSelectedLiftOffDistanceChanged(double? value)
@@ -566,7 +615,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
 
         _settings.LiftOffDistance = value.Value;
-        QueueWrite("lod", ClickDelay, $"Lift-off distance {value:0.#} mm", (c, s, ct) => c.SetLiftOffDistanceAsync(s, ct));
+        QueueWrite("lod", ClickDelay, $"Lift-off distance {value:0.#} mm", (c, s, ct) => c.SetLiftOffDistanceAsync(s, ct),
+            (sent, applied) => applied.LiftOffDistance = sent.LiftOffDistance);
     }
 
     partial void OnMotionSyncChanged(bool value)
@@ -577,16 +627,23 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
 
         _settings.MotionSync = value;
-        QueueWrite("motionSync", ClickDelay, $"Motion Sync {(value ? "on" : "off")}", (c, s, ct) => c.SetMotionSyncAsync(s, ct));
+        QueueWrite("motionSync", ClickDelay, $"Motion Sync {(value ? "on" : "off")}", (c, s, ct) => c.SetMotionSyncAsync(s, ct),
+            (sent, applied) => applied.MotionSync = sent.MotionSync);
     }
 
     /// <summary>
     /// Debounces and sends one setting. A snapshot of the settings is taken when the write fires,
-    /// so the background I/O never sees a half-edited object.
+    /// so the background I/O never sees a half-edited object. On real success, <paramref name="commit"/>
+    /// copies the sent value into <see cref="_applied"/>, which is what gets persisted.
     /// </summary>
-    private void QueueWrite(string key, TimeSpan delay, string label, Func<MouseController, MouseSettings, CancellationToken, Task<CommandResult>> write)
+    private void QueueWrite(
+        string key,
+        TimeSpan delay,
+        string label,
+        Func<MouseController, MouseSettings, CancellationToken, Task<CommandResult>> write,
+        Action<MouseSettings, MouseSettings> commit)
     {
-        if (_controller is not { } controller || _sessionCts is not { } session)
+        if (_controller is not { } controller || _sessionCts is not { } session || IsReadingBack)
         {
             return;
         }
@@ -601,7 +658,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
             try
             {
-                var result = await write(controller, _settings.Clone(), token);
+                var sent = _settings.Clone();
+                var result = await write(controller, sent, token);
                 if (_controller != controller)
                 {
                     return;
@@ -618,7 +676,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 else
                 {
                     LastAction = $"{label} — applied";
-                    _store.SetProfile(controller.Definition.Id, _settings);
+                    commit(sent, _applied);
+                    _store.SetProfile(controller.Definition.Id, _applied);
                 }
             }
             catch (OperationCanceledException)
@@ -641,6 +700,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             {
                 DryRun = true; // re-entrant set; the binding re-reads the value
                 return;
+            }
+
+            if (DryRun != value)
+            {
+                return; // a session started while the dialog was open already forced dry-run back on
             }
         }
 
@@ -702,6 +766,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
+        IsReadingBack = true;
         try
         {
             var values = await controller.RunConnectSequenceAsync(_settings.Clone(), ct);
@@ -717,11 +782,19 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 _log.Info("UI updated with the mouse's current configuration.");
             }
 
-            _store.SetProfile(controller.Definition.Id, _settings);
+            _applied = _settings.Clone();
+            _store.SetProfile(controller.Definition.Id, _applied);
             LastAction = "Settings read from the mouse";
         }
         catch (OperationCanceledException)
         {
+        }
+        finally
+        {
+            if (_controller == controller)
+            {
+                IsReadingBack = false;
+            }
         }
     }
 
@@ -786,7 +859,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private async Task WriteAllAsync()
     {
-        if (_controller is not { } c || _sessionCts is not { } session)
+        if (_controller is not { } c || _sessionCts is not { } session || IsReadingBack)
         {
             return;
         }
@@ -838,9 +911,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         LastAction = failed > 0
             ? $"Write all — {failed} of {results.Count} command(s) failed"
             : $"Write all — {results.Count} command(s) {(c.IsSimulating ? "logged (dry-run)" : "applied")}";
-        if (failed == 0 && !c.IsSimulating)
+        if (failed == 0 && !c.IsSimulating && _controller == c)
         {
-            _store.SetProfile(c.Definition.Id, _settings);
+            _applied = s.Clone();
+            _store.SetProfile(c.Definition.Id, _applied);
         }
     }
 

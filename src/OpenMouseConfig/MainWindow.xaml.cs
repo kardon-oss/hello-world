@@ -17,6 +17,14 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+
+        // Fit the startup size to the work area before CenterScreen positions the window; otherwise
+        // the title bar ends up above the screen on 768-px-high laptop displays.
+        var workArea = SystemParameters.WorkArea;
+        MinHeight = Math.Min(MinHeight, workArea.Height);
+        MinWidth = Math.Min(MinWidth, workArea.Width);
+        Height = Math.Min(Height, workArea.Height);
+        Width = Math.Min(Width, workArea.Width);
     }
 
     private MainViewModel? ViewModel => DataContext as MainViewModel;

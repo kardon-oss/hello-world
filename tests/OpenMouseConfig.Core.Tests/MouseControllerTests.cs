@@ -129,7 +129,8 @@ public class MouseControllerTests
 
         var timeout = await controller.ReadBatteryAsync(Settings(controller.Definition));
         Assert.False(timeout.Success);
-        Assert.Contains("No matching response", timeout.Error);
+        Assert.Contains("No matching input report", timeout.Error);
+        Assert.Contains("within 200 ms", timeout.Error);
     }
 
     [Fact]
@@ -183,6 +184,55 @@ public class MouseControllerTests
         Assert.Contains("unplugged", failed.Error);
     }
 
+    [Fact]
+    public async Task Feature_reply_failure_names_the_knobs_that_actually_bound_it()
+    {
+        var device = new FakeHidDevice(featureLength: 8); // always answers with zeros
+        using var controller = new MouseController(Definition(), device, NullActivityLog.Instance);
+
+        var result = await controller.ReadBatteryAsync(Settings(controller.Definition));
+
+        Assert.False(result.Success);
+        Assert.Contains("4 GET_FEATURE attempt(s)", result.Error); // responseRetries 3 + 1
+        Assert.Contains("responseDelayMs", result.Error);
+    }
+
+    [Fact]
+    public async Task Disposing_mid_command_cancels_instead_of_reporting_a_device_error()
+    {
+        var log = new ListLog();
+        MouseController? controller = null;
+        var device = new FakeHidDevice(featureLength: 8)
+        {
+            // The UI switches devices while this command is on the wire.
+            OnSend = () =>
+            {
+                controller!.Dispose();
+                throw new ObjectDisposedException("SafeFileHandle");
+            },
+        };
+        controller = new MouseController(Definition(), device, log);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => controller.SetPollingRateAsync(Settings(controller.Definition)));
+        Assert.DoesNotContain(log.Lines, l => l.Kind == LogKind.Error);
+    }
+
+    [Fact]
+    public void Device_gone_is_reported_only_for_a_live_session_whose_handle_died()
+    {
+        var device = new FakeHidDevice(featureLength: 8);
+        var controller = new MouseController(Definition(), device, NullActivityLog.Instance);
+        Assert.False(controller.IsDeviceGone);
+
+        device.IsConnected = false;
+        Assert.True(controller.IsDeviceGone);
+
+        controller.Dispose();
+        Assert.False(controller.IsDeviceGone);
+        using var offline = new MouseController(Definition(), null, NullActivityLog.Instance);
+        Assert.False(offline.IsDeviceGone);
+    }
+
     private sealed class ListLog : IActivityLog
     {
         public List<(LogKind Kind, string Message)> Lines { get; } = [];
@@ -220,6 +270,10 @@ public class MouseControllerTests
 
         public bool CanReadWrite => true;
 
+        public bool IsConnected { get; set; } = true;
+
+        public Action? OnSend { get; init; }
+
         public void SendFeatureReport(ReadOnlySpan<byte> report)
         {
             if (FailSends)
@@ -227,6 +281,7 @@ public class MouseControllerTests
                 throw new HidException("Device unplugged.");
             }
 
+            OnSend?.Invoke();
             SentFeatures.Add(report.ToArray());
         }
 

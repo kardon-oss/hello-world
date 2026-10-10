@@ -43,19 +43,24 @@ public sealed class HidDevice : IHidDevice
         int readWriteError = Marshal.GetLastPInvokeError();
         handle.Dispose();
 
-        // Windows opens mouse and keyboard top-level collections exclusively (anti key-logger).
-        // Feature reports still work on a handle opened with no access rights — the same trick
-        // hidapi uses. Vendor-defined config collections normally don't need this.
-        handle = NativeMethods.OpenDevice(info.Path, access: 0, overlapped: true);
-        if (!handle.IsInvalid)
+        // Windows opens mouse and keyboard top-level collections exclusively (anti key-logger), which
+        // shows up as ERROR_ACCESS_DENIED. Feature reports still work on a handle opened with no
+        // access rights — the same trick hidapi and Chromium use. Any other error, e.g.
+        // ERROR_SHARING_VIOLATION from vendor software holding the device, is reported as-is.
+        if (readWriteError == NativeMethods.ErrorAccessDenied)
         {
-            return new HidDevice(info, handle, canReadWrite: false);
+            handle = NativeMethods.OpenDevice(info.Path, access: 0, overlapped: true);
+            if (!handle.IsInvalid)
+            {
+                return new HidDevice(info, handle, canReadWrite: false);
+            }
+
+            handle.Dispose();
         }
 
-        handle.Dispose();
         throw new HidException(
             $"Could not open HID device ({new Win32Exception(readWriteError).Message}). " +
-            "Is another program (vendor software, a browser tab using WebHID) holding it exclusively?",
+            "Is another program (e.g. the vendor's configuration software) holding it exclusively?",
             new Win32Exception(readWriteError));
     }
 
@@ -113,6 +118,24 @@ public sealed class HidDevice : IHidDevice
         NativeMethods.HidD_FlushQueue(_handle);
     }
 
+    public bool IsConnected
+    {
+        get
+        {
+            // After a surprise removal the handle stays open but every IOCTL on it fails, even if a
+            // re-plugged device re-appears under the same path.
+            var attributes = new NativeMethods.HiddAttributes { Size = Marshal.SizeOf<NativeMethods.HiddAttributes>() };
+            try
+            {
+                return !_handle.IsClosed && NativeMethods.HidD_GetAttributes(_handle, ref attributes);
+            }
+            catch (ObjectDisposedException)
+            {
+                return false;
+            }
+        }
+    }
+
     public void Dispose() => _handle.Dispose();
 
     /// <summary>
@@ -122,10 +145,17 @@ public sealed class HidDevice : IHidDevice
     /// </summary>
     private unsafe int OverlappedTransfer(bool write, byte* buffer, int length, TimeSpan timeout)
     {
-        using var completed = new ManualResetEvent(initialState: false);
-        var overlapped = (NativeOverlapped*)NativeMemory.AllocZeroed((nuint)sizeof(NativeOverlapped));
+        bool addedRef = false;
+        NativeOverlapped* overlapped = null;
         try
         {
+            // Hold a reference on the handle for the whole transfer. A concurrent Dispose (the user
+            // switched devices) then only marks it, and CloseHandle runs after the kernel is done
+            // with the OVERLAPPED and the pinned buffer, never while the I/O may still be pending.
+            _handle.DangerousAddRef(ref addedRef);
+
+            using var completed = new ManualResetEvent(initialState: false);
+            overlapped = (NativeOverlapped*)NativeMemory.AllocZeroed((nuint)sizeof(NativeOverlapped));
             overlapped->EventHandle = completed.SafeWaitHandle.DangerousGetHandle();
 
             bool finishedSynchronously = write
@@ -144,9 +174,19 @@ public sealed class HidDevice : IHidDevice
                 {
                     NativeMethods.CancelIoEx(_handle, overlapped);
 
-                    // Wait for the cancellation to land; the kernel still owns `buffer`/`overlapped` until then.
-                    NativeMethods.GetOverlappedResult(_handle, overlapped, out _, wait: true);
-                    return -1;
+                    // Wait for the cancellation to land; the kernel still owns `buffer`/`overlapped` until
+                    // then. The transfer may also have completed just before the cancel: keep its result.
+                    if (NativeMethods.GetOverlappedResult(_handle, overlapped, out int lateTransfer, wait: true))
+                    {
+                        return lateTransfer;
+                    }
+
+                    if (Marshal.GetLastPInvokeError() == NativeMethods.ErrorOperationAborted)
+                    {
+                        return -1;
+                    }
+
+                    throw LastError(write ? "WriteFile" : "ReadFile");
                 }
             }
 
@@ -159,7 +199,15 @@ public sealed class HidDevice : IHidDevice
         }
         finally
         {
-            NativeMemory.Free(overlapped);
+            if (overlapped != null)
+            {
+                NativeMemory.Free(overlapped);
+            }
+
+            if (addedRef)
+            {
+                _handle.DangerousRelease();
+            }
         }
     }
 

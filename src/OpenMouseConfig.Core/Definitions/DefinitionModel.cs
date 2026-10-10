@@ -305,7 +305,7 @@ public sealed class CommandDefinition : DefinitionNode
 /// <summary>
 /// Places one value into (or reads one value out of) a report.
 /// <para>
-/// Encoding:  <c>raw = map[value]</c> if a map is given, otherwise <c>raw = round(value × multiply ÷ divide) + add</c>.
+/// Encoding:  <c>raw = map[value]</c> if a map is given, otherwise <c>raw = round(value × multiply ÷ divide + add)</c>.
 /// The raw integer is then written as <see cref="Size"/> bytes at <see cref="Index"/>, optionally
 /// shifted into a bit field described by <see cref="Mask"/>/<see cref="Shift"/>.
 /// Decoding (responses) applies the exact inverse.
@@ -314,7 +314,7 @@ public sealed class CommandDefinition : DefinitionNode
 public sealed class FieldDefinition : DefinitionNode
 {
     private IReadOnlyList<MapEntry>? _mapEntries;
-    private Dictionary<string, int>? _mapSource;
+    private Dictionary<string, long>? _mapSource;
 
     /// <summary>
     /// Variable name. For commands: which value to write (see README "Variables"), e.g. "value", "dpi", "stage".
@@ -322,8 +322,8 @@ public sealed class FieldDefinition : DefinitionNode
     /// </summary>
     public string Name { get; set; } = "";
 
-    /// <summary>Byte offset in the report (0 = report ID).</summary>
-    public int Index { get; set; }
+    /// <summary>Byte offset in the report (0 = report ID). Required: -1 means "not set" and fails validation.</summary>
+    public int Index { get; set; } = -1;
 
     /// <summary>Number of bytes (1-4).</summary>
     public int Size { get; set; } = 1;
@@ -331,7 +331,7 @@ public sealed class FieldDefinition : DefinitionNode
     public Endianness Endian { get; set; } = Endianness.Little;
 
     /// <summary>Bit mask (applied to the <see cref="Size"/>-byte integer) for packed flag bytes.</summary>
-    public int? Mask { get; set; }
+    public long? Mask { get; set; }
 
     /// <summary>Left shift applied to the raw value before masking, e.g. shift 4 + mask 0xF0 for the high nibble.</summary>
     public int Shift { get; set; }
@@ -346,7 +346,7 @@ public sealed class FieldDefinition : DefinitionNode
     /// Lookup table UI value → raw byte, e.g. { "125": "0x08", "1000": "0x01" } or { "off": 0, "on": 1 }.
     /// Takes precedence over multiply/divide/add.
     /// </summary>
-    public Dictionary<string, int>? Map { get; set; }
+    public Dictionary<string, long>? Map { get; set; }
 
     internal IReadOnlyList<MapEntry> GetMapEntries()
     {
@@ -363,7 +363,7 @@ public sealed class FieldDefinition : DefinitionNode
 /// <summary>One parsed entry of <see cref="FieldDefinition.Map"/>.</summary>
 internal readonly record struct MapEntry(double Value, long Raw)
 {
-    public static IReadOnlyList<MapEntry> ParseAll(Dictionary<string, int>? map)
+    public static IReadOnlyList<MapEntry> ParseAll(Dictionary<string, long>? map)
     {
         if (map is null || map.Count == 0)
         {

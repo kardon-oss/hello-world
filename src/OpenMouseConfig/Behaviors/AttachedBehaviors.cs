@@ -2,6 +2,7 @@ using System.Collections.Specialized;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Threading;
 
 namespace OpenMouseConfig.Behaviors;
 
@@ -33,10 +34,12 @@ public static class TextBoxBehaviors
 
         box.KeyDown -= CommitOnEnter;
         box.GotKeyboardFocus -= SelectAllOnFocus;
+        box.PreviewMouseLeftButtonDown -= FocusOnFirstClick;
         if (e.NewValue is true)
         {
             box.KeyDown += CommitOnEnter;
             box.GotKeyboardFocus += SelectAllOnFocus;
+            box.PreviewMouseLeftButtonDown += FocusOnFirstClick;
         }
     }
 
@@ -55,6 +58,17 @@ public static class TextBoxBehaviors
         if (sender is TextBox box)
         {
             box.SelectAll();
+        }
+    }
+
+    // Without this, the mouse-down that gives the box focus also places the caret, undoing SelectAll,
+    // so typed digits would be appended to the old value.
+    private static void FocusOnFirstClick(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is TextBox box && !box.IsKeyboardFocusWithin)
+        {
+            box.Focus();
+            e.Handled = true;
         }
     }
 
@@ -109,6 +123,15 @@ public static class ListBoxBehaviors
             if (args.Action == NotifyCollectionChangedAction.Add && list.Items.Count > 0 && list.IsVisible)
             {
                 list.ScrollIntoView(list.Items[^1]);
+            }
+        };
+
+        // Lines logged while the console was collapsed: jump to the newest once it's shown and laid out.
+        list.IsVisibleChanged += (_, args) =>
+        {
+            if (args.NewValue is true && list.Items.Count > 0)
+            {
+                list.Dispatcher.BeginInvoke(() => list.ScrollIntoView(list.Items[^1]), DispatcherPriority.Loaded);
             }
         };
     }

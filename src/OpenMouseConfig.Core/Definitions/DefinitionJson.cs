@@ -27,6 +27,7 @@ public static class DefinitionJson
 
         // Integers may be written as numbers, "1234" or "0x04D2".
         options.Converters.Add(new FlexibleIntConverter());
+        options.Converters.Add(new FlexibleLongConverter()); // masks/map values up to 0xFFFFFFFF
 
         // Enums as strings ("feature", "output", "sumComplement8"). Reading is case-insensitive;
         // numeric enum values are rejected because they'd silently map to nonsense.
@@ -65,5 +66,38 @@ public sealed class FlexibleIntConverter : JsonConverter<int>
     }
 
     public override void Write(Utf8JsonWriter writer, int value, JsonSerializerOptions options) =>
+        writer.WriteNumberValue(value);
+}
+
+/// <summary>64-bit variant of <see cref="FlexibleIntConverter"/>, for masks and map values that may use bit 31.</summary>
+public sealed class FlexibleLongConverter : JsonConverter<long>
+{
+    public override long Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        switch (reader.TokenType)
+        {
+            case JsonTokenType.Number:
+                if (reader.TryGetInt64(out var number))
+                {
+                    return number;
+                }
+
+                throw new JsonException("Number is not a whole 64-bit integer.");
+
+            case JsonTokenType.String:
+                var text = reader.GetString();
+                if (HexFormat.TryParseInteger(text, out var parsed))
+                {
+                    return parsed;
+                }
+
+                throw new JsonException($"\"{text}\" is not an integer. Use a number (255) or hex string (\"0xFF\").");
+
+            default:
+                throw new JsonException($"Expected an integer or hex string but found {reader.TokenType}.");
+        }
+    }
+
+    public override void Write(Utf8JsonWriter writer, long value, JsonSerializerOptions options) =>
         writer.WriteNumberValue(value);
 }

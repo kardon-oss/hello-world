@@ -152,6 +152,26 @@ public class ChecksumAndPayloadTests
     }
 
     [Fact]
+    public void Build_refuses_to_guess_the_checksum_position_without_a_report_length()
+    {
+        var command = new CommandDefinition { Payload = "05 01 02" };
+        var checksum = new ChecksumDefinition { Type = ChecksumType.Sum8, Index = -1 };
+
+        var ex = Assert.Throws<PayloadException>(() => PayloadBuilder.Build(command, checksum, 0, new Dictionary<string, double>()));
+
+        Assert.Contains("reportLength", ex.Message);
+        Assert.Equal(3, PayloadBuilder.Build(command, new ChecksumDefinition { Type = ChecksumType.None }, 0, new Dictionary<string, double>()).Length);
+    }
+
+    [Fact]
+    public void Field_without_an_index_never_overwrites_the_report_id()
+    {
+        var report = new byte[] { 0x05, 0x00 };
+        Assert.Throws<PayloadException>(() => FieldCodec.Encode(report, new FieldDefinition { Name = "value" }, 1));
+        Assert.Equal(0x05, report[0]);
+    }
+
+    [Fact]
     public void Build_explains_missing_variables_and_oversized_payloads()
     {
         var command = new CommandDefinition { Payload = "05 01 02 03", Fields = [new FieldDefinition { Name = "nope", Index = 1 }] };

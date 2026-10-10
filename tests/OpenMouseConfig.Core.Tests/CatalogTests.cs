@@ -167,6 +167,90 @@ public sealed class CatalogTests : IDisposable
         Assert.Equal(Hid(0xFF00, "mi_02").Path, Assert.Single(result).Hid!.Path);
     }
 
+    private const string ValidMatch = """ "match": [ { "vendorId": 1, "productId": 1, "usagePage": 65280 } ] """;
+
+    [Theory]
+    [InlineData(""" "match": [ null ] """, "match[0] is null")]
+    [InlineData(ValidMatch + """, "onConnect": [ null ] """, "onConnect contains null")]
+    [InlineData(ValidMatch + """, "commands": { "c": { "payload": "05", "fields": [ null ] } } """, "fields[0] is null")]
+    [InlineData(ValidMatch + """, "commands": { "c": { "payload": "05", "response": { "fields": [ null ] } } } """, "response.fields[0] is null")]
+    public void Null_list_entries_skip_only_that_device(string badBody, string expectedError)
+    {
+        var file = Write("nulls.json", $$"""
+            { "devices": [
+              { "id": "bad", "name": "Bad", {{badBody}} },
+              { "id": "good", "name": "Good", "match": [ { "vendorId": 1, "productId": 2, "usagePage": 65280 } ] }
+            ] }
+            """);
+
+        var catalog = DeviceCatalog.Load([file]);
+
+        Assert.Equal("good", Assert.Single(catalog.Devices).Id);
+        Assert.Contains(catalog.Messages, m => m.Severity == CatalogSeverity.Error && m.Source.Contains("bad") && m.Text.Contains(expectedError));
+    }
+
+    [Fact]
+    public void Validator_rejects_definitions_that_would_misbehave_at_runtime()
+    {
+        var file = Write("rules.json", """
+            { "devices": [
+              { "id": "no-index", "name": "x", "match": [ { "vendorId": 1, "productId": 1, "usagePage": 65280 } ],
+                "commands": { "c": { "payload": "05 01", "fields": [ { "name": "value" } ] } } },
+              { "id": "reply-oob", "name": "x", "match": [ { "vendorId": 1, "productId": 2, "usagePage": 65280 } ],
+                "transport": { "reportLength": 8 },
+                "commands": { "c": { "payload": "05 10", "response": { "fields": [ { "name": "battery", "index": 9 } ] } } } },
+              { "id": "zero-timeout", "name": "x", "match": [ { "vendorId": 1, "productId": 3, "usagePage": 65280 } ],
+                "commands": { "c": { "payload": "05 10", "response": { "timeoutMs": 0 } } } },
+              { "id": "checksum-overlap", "name": "x", "match": [ { "vendorId": 1, "productId": 4, "usagePage": 65280 } ],
+                "transport": { "checksum": { "type": "sum8", "index": 3, "start": 0, "end": 5 } } }
+            ] }
+            """);
+
+        var catalog = DeviceCatalog.Load([file]);
+
+        Assert.Empty(catalog.Devices);
+        Assert.Contains(catalog.Messages, m => m.Source.Contains("no-index") && m.Text.Contains("\"index\" is missing"));
+        Assert.Contains(catalog.Messages, m => m.Source.Contains("reply-oob") && m.Text.Contains("exceeds transport.reportLength"));
+        Assert.Contains(catalog.Messages, m => m.Source.Contains("zero-timeout") && m.Text.Contains("timeoutMs must be positive"));
+        Assert.Contains(catalog.Messages, m => m.Source.Contains("checksum-overlap") && m.Text.Contains("inside its own range"));
+        Assert.Contains(catalog.Messages, m => m.Source.Contains("checksum-overlap") && m.Text.Contains("Set reportLength"));
+    }
+
+    [Fact]
+    public void Masks_and_map_values_can_use_bit_31()
+    {
+        var file = Write("wide.json", """
+            { "devices": [ { "id": "w", "name": "W", "match": [ { "vendorId": 1, "productId": 1, "usagePage": 65280 } ],
+              "commands": { "c": { "payload": "05 00 00 00 00", "fields": [
+                { "name": "value", "index": 1, "size": 4, "mask": "0xFF000000", "shift": 24 },
+                { "name": "value", "index": 1, "size": 4, "mask": "0x00000001", "map": { "1": "0xFFFFFFFF" } } ] } } } ] }
+            """);
+
+        var catalog = DeviceCatalog.Load([file]);
+
+        Assert.Equal(0, catalog.ErrorCount);
+        var field = Assert.Single(catalog.Devices).Commands["c"].Fields[0];
+        Assert.Equal(0xFF000000L, field.Mask);
+        var report = new byte[5];
+        Protocol.FieldCodec.Encode(report, field, 0xAB);
+        Assert.Equal(new byte[] { 0, 0, 0, 0, 0xAB }, report);
+    }
+
+    [Fact]
+    public void Bad_hex_numbers_are_reported_with_their_json_location()
+    {
+        var file = Write("badhex.json", """
+            { "devices": [
+              { "id": "x", "match": [ { "vendorId": "0xZZ", "productId": 1 } ] } ] }
+            """);
+
+        var error = Assert.Single(DeviceCatalog.Load([file]).Messages);
+
+        Assert.Contains("0xZZ", error.Text);
+        Assert.Contains("LineNumber: 1", error.Text);
+        Assert.Contains("vendorId", error.Text);
+    }
+
     private string Write(string name, string json)
     {
         var path = Path.Combine(_dir, name);

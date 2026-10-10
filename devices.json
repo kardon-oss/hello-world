@@ -95,13 +95,14 @@
       // Commands. Every PLACEHOLDER layout below follows the same invented scheme:
       //   byte 0 = report ID (0x05) · byte 1 = command ID · bytes 2.. = data
       //
-      // Field rules:  raw = map[value]   or   raw = round(value × multiply ÷ divide) + add
-      //   "index"  byte offset (0 = report ID)     "size"  1-4 bytes
+      // Field rules:  raw = map[value]   or   raw = round(value × multiply ÷ divide + add)
+      //   "index"  byte offset (required; 0 = report ID)   "size"  1-4 bytes
       //   "endian" "little" (default) | "big"      "mask"/"shift"  for bit fields
       //
-      // Variables every command can use: value, pollingRate, dpi1..dpi4, activeStage,
+      // Variables every command can use: pollingRate, dpi1..dpi4, activeStage,
       // stageCount, debounce, liftOffDistance, motionSync (0/1).
-      // setDpiStage additionally gets: stage (1-based) and dpi.
+      // The set* commands also get "value" (the setting being changed);
+      // setDpiStage and setActiveDpiStage also get "stage" (1-based) and "dpi".
       // ---------------------------------------------------------------------------
       "commands": {
         "setPollingRate": {

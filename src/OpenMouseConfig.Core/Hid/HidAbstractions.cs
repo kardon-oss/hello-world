@@ -85,6 +85,12 @@ public interface IHidDevice : IDisposable
     /// </summary>
     bool CanReadWrite { get; }
 
+    /// <summary>
+    /// False once the device behind this handle is gone (unplugged, or unplugged and re-plugged:
+    /// the old handle stays dead even when the device re-appears under the same path).
+    /// </summary>
+    bool IsConnected { get; }
+
     /// <summary>SET_REPORT(Feature). <paramref name="report"/>[0] is the report ID; shorter buffers are zero-padded.</summary>
     void SendFeatureReport(ReadOnlySpan<byte> report);
 

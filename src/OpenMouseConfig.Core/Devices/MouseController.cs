@@ -75,6 +75,12 @@ public sealed class MouseController : IDisposable
     /// <summary>True when nothing will actually be sent (dry-run or offline).</summary>
     public bool IsSimulating => DryRun || IsOffline;
 
+    /// <summary>
+    /// True when the opened device has gone away (unplugged, or re-plugged so fast that a rescan
+    /// still sees the same path). The session must then be reopened.
+    /// </summary>
+    public bool IsDeviceGone => !_disposed && _device is { IsConnected: false };
+
     // ---- Typed API used by the view model ----------------------------------------------------
 
     public Task<CommandResult> SetPollingRateAsync(MouseSettings settings, CancellationToken ct = default) =>
@@ -201,6 +207,11 @@ public sealed class MouseController : IDisposable
             ObjectDisposedException.ThrowIf(_disposed, this);
             return await Task.Run(() => ExecuteCoreAsync(name, command, variables, ct), ct).ConfigureAwait(false);
         }
+        catch (ObjectDisposedException) when (_disposed)
+        {
+            // The session was closed (device switched) while this command was queued or running.
+            throw new OperationCanceledException(ct);
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _log.Error($"{name}: {ex.Message}");
@@ -245,7 +256,10 @@ public sealed class MouseController : IDisposable
             response = await ReadResponseAsync(name, responseDefinition, responseKind, report, ct).ConfigureAwait(false);
             if (response is null)
             {
-                var message = $"No matching response (expect \"{responseDefinition.Expect}\") within the timeout.";
+                var message = responseKind == ResponseKind.Feature
+                    ? $"No matching response (expect \"{responseDefinition.Expect}\") after {transport.ResponseRetries + 1} GET_FEATURE attempt(s); " +
+                      "increase transport.responseDelayMs or responseRetries if the device answers slowly."
+                    : $"No matching input report (expect \"{responseDefinition.Expect}\") within {responseDefinition.TimeoutMs ?? transport.ResponseTimeoutMs} ms.";
                 _log.Error($"{name}: {message}");
                 return CommandResult.Fail(name, message, report);
             }
@@ -325,6 +339,10 @@ public sealed class MouseController : IDisposable
                     return CommandResult.Ok("raw", report, response, null);
                 },
                 ct).ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException) when (_disposed)
+        {
+            throw new OperationCanceledException(ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
