@@ -1,0 +1,15 @@
+<Project>
+  <!-- Settings shared by every project in the solution. -->
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!-- Lets the WPF project restore and compile on Linux/macOS (e.g. CI). The app itself only runs on Windows. -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+
+    <Version>0.1.0</Version>
+    <Product>OpenMouseConfig</Product>
+    <Company>OpenMouseConfig contributors</Company>
+  </PropertyGroup>
+</Project>
