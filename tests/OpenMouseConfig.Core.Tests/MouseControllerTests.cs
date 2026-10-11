@@ -197,14 +197,52 @@ public class MouseControllerTests
         Assert.Contains("responseDelayMs", result.Error);
     }
 
+    [Theory]
+    [InlineData(true)]  // HidDevice.Dispose aborts the pending ReadFile (CancelIoEx) → HidException
+    [InlineData(false)] // the read still runs to its timeout and returns null
+    public async Task Switching_devices_during_a_pending_input_read_cancels_cleanly(bool disposeAbortsTransfer)
+    {
+        var log = new ListLog();
+        var device = new PendingReadDevice(disposeAbortsTransfer);
+        var controller = new MouseController(Definition(ResponseKind.Input), device, log);
+        using var session = new CancellationTokenSource();
+
+        var read = controller.ReadBatteryAsync(Settings(controller.Definition), session.Token);
+        Assert.True(device.ReadStarted.Wait(TimeSpan.FromSeconds(5)));
+        session.Cancel();      // MainViewModel.CloseSession: cancel the session token...
+        controller.Dispose();  // ...then dispose the controller
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => read);
+        Assert.DoesNotContain(log.Lines, l => l.Kind == LogKind.Error);
+    }
+
     [Fact]
-    public async Task Disposing_mid_command_cancels_instead_of_reporting_a_device_error()
+    public async Task Feature_reply_message_blames_the_timeout_when_the_timeout_ended_the_loop()
+    {
+        var definition = Definition();
+        definition.Transport.ResponseDelayMs = 60;
+        definition.Transport.ResponseRetries = 10;
+        definition.Transport.ResponseTimeoutMs = 100;
+        var device = new FakeHidDevice(featureLength: 8);
+        using var controller = new MouseController(definition, device, NullActivityLog.Instance);
+
+        var result = await controller.ReadBatteryAsync(Settings(definition));
+
+        Assert.False(result.Success);
+        Assert.Contains($"after {device.FeatureReadCount} GET_FEATURE attempt(s)", result.Error);
+        Assert.Contains("timeout", result.Error);
+        Assert.True(device.FeatureReadCount < 11);
+    }
+
+    [Fact]
+    public async Task Disposing_between_commands_cancels_instead_of_reporting_a_device_error()
     {
         var log = new ListLog();
         MouseController? controller = null;
         var device = new FakeHidDevice(featureLength: 8)
         {
-            // The UI switches devices while this command is on the wire.
+            // The UI switched devices just before this command reached the HID layer: the real
+            // HidDevice then throws ObjectDisposedException when it touches the closed handle.
             OnSend = () =>
             {
                 controller!.Dispose();
@@ -244,6 +282,55 @@ public class MouseControllerTests
                 Lines.Add((kind, message));
             }
         }
+    }
+
+    /// <summary>
+    /// Models HidDevice's disposal semantics: a pending input read either gets aborted by Dispose
+    /// (CancelIoEx → HidException) or keeps running until its timeout and returns null.
+    /// </summary>
+    private sealed class PendingReadDevice(bool disposeAbortsTransfer) : IHidDevice
+    {
+        private readonly ManualResetEventSlim _disposed = new();
+
+        public ManualResetEventSlim ReadStarted { get; } = new();
+
+        public HidDeviceInfo Info { get; } = new() { Path = "pending", FeatureReportLength = 8, InputReportLength = 8, OutputReportLength = 8 };
+
+        public bool CanReadWrite => true;
+
+        public bool IsConnected => true;
+
+        public void SendFeatureReport(ReadOnlySpan<byte> report)
+        {
+        }
+
+        public byte[] ReadFeatureReport(byte reportId) => new byte[8];
+
+        public void WriteOutputReport(ReadOnlySpan<byte> report, TimeSpan timeout)
+        {
+        }
+
+        public byte[]? ReadInputReport(TimeSpan timeout)
+        {
+            ReadStarted.Set();
+            if (disposeAbortsTransfer && _disposed.Wait(timeout))
+            {
+                throw new HidException("ReadFile failed: The I/O operation has been aborted.");
+            }
+
+            if (!disposeAbortsTransfer)
+            {
+                Thread.Sleep(timeout);
+            }
+
+            return null;
+        }
+
+        public void FlushInputBuffer()
+        {
+        }
+
+        public void Dispose() => _disposed.Set();
     }
 
     private sealed class FakeHidDevice(int featureLength, int inputLength = 0) : IHidDevice

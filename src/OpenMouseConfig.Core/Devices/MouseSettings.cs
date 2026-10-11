@@ -124,6 +124,44 @@ public sealed class MouseSettings
         return vars;
     }
 
+    /// <summary>
+    /// Copies the settings named by <paramref name="variableNames"/> (e.g. "pollingRate", "dpi2") from
+    /// <paramref name="source"/>. Command-specific names such as "value", "stage" or "dpi" are ignored.
+    /// </summary>
+    public void CopyFrom(MouseSettings source, IEnumerable<string> variableNames)
+    {
+        foreach (var name in variableNames)
+        {
+            switch (name.ToLowerInvariant())
+            {
+                case "pollingrate":
+                    PollingRate = source.PollingRate;
+                    break;
+                case "activestage":
+                    ActiveStage = source.ActiveStage;
+                    break;
+                case "debounce":
+                    Debounce = source.Debounce;
+                    break;
+                case "liftoffdistance":
+                    LiftOffDistance = source.LiftOffDistance;
+                    break;
+                case "motionsync":
+                    MotionSync = source.MotionSync;
+                    break;
+                default:
+                    if (name.Length > 3 && name.StartsWith("dpi", StringComparison.OrdinalIgnoreCase)
+                        && int.TryParse(name.AsSpan(3), out int stage)
+                        && stage >= 1 && stage <= DpiStages.Count && stage <= source.DpiStages.Count)
+                    {
+                        DpiStages[stage - 1] = source.DpiStages[stage - 1];
+                    }
+
+                    break;
+            }
+        }
+    }
+
     /// <summary>Applies values decoded from a device response (names as in <see cref="VariableNames"/>).</summary>
     /// <returns>True if anything changed.</returns>
     public bool ApplyDeviceValues(IReadOnlyDictionary<string, double> values, DeviceDefinition definition)

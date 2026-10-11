@@ -207,9 +207,10 @@ public sealed class MouseController : IDisposable
             ObjectDisposedException.ThrowIf(_disposed, this);
             return await Task.Run(() => ExecuteCoreAsync(name, command, variables, ct), ct).ConfigureAwait(false);
         }
-        catch (ObjectDisposedException) when (_disposed)
+        catch (Exception ex) when (ex is not OperationCanceledException && _disposed)
         {
-            // The session was closed (device switched) while this command was queued or running.
+            // The session was closed (device switched) while this command was queued or running;
+            // whatever the transfer reported afterwards (aborted, timed out, disposed) is not a device error.
             throw new OperationCanceledException(ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -253,13 +254,24 @@ public sealed class MouseController : IDisposable
         IReadOnlyDictionary<string, double>? values = null;
         if (command.Response is { } responseDefinition)
         {
-            response = await ReadResponseAsync(name, responseDefinition, responseKind, report, ct).ConfigureAwait(false);
+            var (data, attempts, timedOut) = await ReadResponseAsync(name, responseDefinition, responseKind, report, ct).ConfigureAwait(false);
+            response = data;
             if (response is null)
             {
-                var message = responseKind == ResponseKind.Feature
-                    ? $"No matching response (expect \"{responseDefinition.Expect}\") after {transport.ResponseRetries + 1} GET_FEATURE attempt(s); " +
-                      "increase transport.responseDelayMs or responseRetries if the device answers slowly."
-                    : $"No matching input report (expect \"{responseDefinition.Expect}\") within {responseDefinition.TimeoutMs ?? transport.ResponseTimeoutMs} ms.";
+                // The session was closed while we waited (device switched): not a device error.
+                if (_disposed || ct.IsCancellationRequested)
+                {
+                    throw new OperationCanceledException(ct);
+                }
+
+                int timeoutMs = responseDefinition.TimeoutMs ?? transport.ResponseTimeoutMs;
+                var message = responseKind == ResponseKind.Input
+                    ? $"No matching input report (expect \"{responseDefinition.Expect}\") within {timeoutMs} ms."
+                    : timedOut
+                        ? $"No matching response (expect \"{responseDefinition.Expect}\") after {attempts} GET_FEATURE attempt(s): the {timeoutMs} ms " +
+                          "timeout (transport.responseTimeoutMs / response.timeoutMs) ran out first; raise it if the device answers slowly."
+                        : $"No matching response (expect \"{responseDefinition.Expect}\") after {attempts} GET_FEATURE attempt(s); " +
+                          "increase transport.responseDelayMs or responseRetries if the device answers slowly.";
                 _log.Error($"{name}: {message}");
                 return CommandResult.Fail(name, message, report);
             }
@@ -340,7 +352,7 @@ public sealed class MouseController : IDisposable
                 },
                 ct).ConfigureAwait(false);
         }
-        catch (ObjectDisposedException) when (_disposed)
+        catch (Exception ex) when (ex is not OperationCanceledException && _disposed)
         {
             throw new OperationCanceledException(ct);
         }
@@ -399,7 +411,8 @@ public sealed class MouseController : IDisposable
     }
 
     /// <summary>Reads until a report matching "expect" arrives, or the timeout expires.</summary>
-    private async Task<byte[]?> ReadResponseAsync(string name, ResponseDefinition response, ResponseKind kind, byte[] request, CancellationToken ct)
+    /// <returns>The matching reply (or null), how many GET_FEATUREs were made, and whether the timeout ended the loop.</returns>
+    private async Task<(byte[]? Data, int Attempts, bool TimedOut)> ReadResponseAsync(string name, ResponseDefinition response, ResponseKind kind, byte[] request, CancellationToken ct)
     {
         var transport = Definition.Transport;
         var pattern = response.GetPattern();
@@ -411,23 +424,25 @@ public sealed class MouseController : IDisposable
             // GET_REPORT(Feature): the device answers immediately with whatever is in its buffer,
             // so poll a few times in case the MCU hasn't processed the command yet.
             byte reportId = (byte)(response.ReportId ?? request[0]);
+            int attempts = 0;
             for (int attempt = 0; attempt <= transport.ResponseRetries; attempt++)
             {
                 await Task.Delay(Math.Max(transport.ResponseDelayMs, attempt == 0 ? 0 : 5), ct).ConfigureAwait(false);
                 var data = _device!.ReadFeatureReport(reportId);
+                attempts++;
                 _log.Rx($"{name} · Feature · {HexFormat.FormatCompact(data)}");
                 if (pattern.Matches(data))
                 {
-                    return data;
+                    return (data, attempts, false);
                 }
 
-                if (clock.Elapsed > timeout)
+                if (clock.Elapsed > timeout && attempt < transport.ResponseRetries)
                 {
-                    break;
+                    return (null, attempts, true);
                 }
             }
 
-            return null;
+            return (null, attempts, false);
         }
 
         // Input reports: the device pushes them on its interrupt IN endpoint; skip unrelated ones.
@@ -437,19 +452,19 @@ public sealed class MouseController : IDisposable
             var remaining = timeout - clock.Elapsed;
             if (remaining <= TimeSpan.Zero)
             {
-                return null;
+                return (null, 0, true);
             }
 
             var data = _device!.ReadInputReport(remaining);
             if (data is null)
             {
-                return null;
+                return (null, 0, true);
             }
 
             _log.Rx($"{name} · Input · {HexFormat.FormatCompact(data)}");
             if (pattern.Matches(data))
             {
-                return data;
+                return (data, 0, false);
             }
         }
     }

@@ -217,6 +217,21 @@ public sealed class CatalogTests : IDisposable
     }
 
     [Fact]
+    public void Feature_replies_to_output_commands_are_not_bounds_checked_against_the_output_length()
+    {
+        var file = Write("mixed.json", """
+            { "devices": [ { "id": "mixed", "name": "Mixed", "match": [ { "vendorId": 1, "productId": 1, "usagePage": 65280 } ],
+              "transport": { "reportType": "output", "responseType": "feature", "reportLength": 17 },
+              "commands": { "c": { "payload": "08 04", "response": { "fields": [ { "name": "battery", "index": 40 } ] } } } } ] }
+            """);
+
+        var catalog = DeviceCatalog.Load([file]);
+
+        Assert.Equal(0, catalog.ErrorCount);
+        Assert.Single(catalog.Devices);
+    }
+
+    [Fact]
     public void Masks_and_map_values_can_use_bit_31()
     {
         var file = Write("wide.json", """

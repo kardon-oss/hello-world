@@ -1,4 +1,5 @@
 using OpenMouseConfig.Core.Definitions;
+using OpenMouseConfig.Core.Devices;
 using OpenMouseConfig.Core.Protocol;
 
 namespace OpenMouseConfig.Core.Tests;
@@ -116,6 +117,35 @@ public class FieldCodecTests
         Assert.Throws<PayloadException>(() => FieldCodec.Encode(report, new FieldDefinition { Name = "dpi", Index = 0, Divide = 50 }, 26000));
         Assert.Throws<PayloadException>(() => FieldCodec.Encode(report, new FieldDefinition { Name = "x", Index = 1, Size = 2 }, 1));
         Assert.Throws<PayloadException>(() => FieldCodec.Encode(report, new FieldDefinition { Name = "x", Index = 0 }, -1));
+    }
+}
+
+public class SettingsBookkeepingTests
+{
+    [Fact]
+    public void Variables_written_include_the_commit_command_and_copy_only_real_settings()
+    {
+        var definition = new DeviceDefinition
+        {
+            CommitCommand = "save",
+            Commands = new(StringComparer.OrdinalIgnoreCase)
+            {
+                ["setPollingRate"] = new() { Payload = "05", Fields = [new() { Name = "value", Index = 1 }, new() { Name = "dpi2", Index = 2 }] },
+                ["save"] = new() { Payload = "05", Fields = [new() { Name = "motionSync", Index = 1 }] },
+            },
+        };
+
+        var written = definition.VariablesWrittenBy("setPollingRate");
+        Assert.Equal(["value", "dpi2", "motionSync"], written);
+
+        var sent = new MouseSettings { PollingRate = 8000, DpiStages = [400, 1600, 3200], MotionSync = true, Debounce = 9 };
+        var applied = new MouseSettings { PollingRate = 1000, DpiStages = [400, 800, 1600], MotionSync = false, Debounce = 2 };
+        applied.CopyFrom(sent, written);
+
+        Assert.Equal(1000, applied.PollingRate); // "value" is command-specific: the caller records it
+        Assert.Equal([400, 1600, 1600], applied.DpiStages);
+        Assert.True(applied.MotionSync);
+        Assert.Equal(2, applied.Debounce);
     }
 }
 

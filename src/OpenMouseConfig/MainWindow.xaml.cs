@@ -17,14 +17,6 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-
-        // Fit the startup size to the work area before CenterScreen positions the window; otherwise
-        // the title bar ends up above the screen on 768-px-high laptop displays.
-        var workArea = SystemParameters.WorkArea;
-        MinHeight = Math.Min(MinHeight, workArea.Height);
-        MinWidth = Math.Min(MinWidth, workArea.Width);
-        Height = Math.Min(Height, workArea.Height);
-        Width = Math.Min(Width, workArea.Width);
     }
 
     private MainViewModel? ViewModel => DataContext as MainViewModel;
@@ -33,12 +25,36 @@ public partial class MainWindow : Window
     {
         base.OnSourceInitialized(e);
         WindowInterop.ApplyDarkChrome(this, CaptionColor);
+        FitToMonitor();
 
         // Top-level windows receive WM_DEVICECHANGE (DBT_DEVNODES_CHANGED) whenever a device is
         // plugged or unplugged — enough to trigger a debounced HID rescan, no registration needed.
         if (PresentationSource.FromVisual(this) is HwndSource source)
         {
             source.AddHook(WndProc);
+        }
+    }
+
+    /// <summary>
+    /// Shrinks the startup size to the work area of the monitor the window opens on (it is not shown
+    /// yet) and re-centres it there; otherwise the title bar ends up above the screen on 768-px-high
+    /// laptop panels, including a laptop screen next to a larger primary monitor.
+    /// </summary>
+    private void FitToMonitor()
+    {
+        if (WindowInterop.GetMonitorWorkArea(this) is not { } work)
+        {
+            return;
+        }
+
+        MinHeight = Math.Min(MinHeight, work.Height);
+        MinWidth = Math.Min(MinWidth, work.Width);
+        if (Height > work.Height || Width > work.Width)
+        {
+            Height = Math.Min(Height, work.Height);
+            Width = Math.Min(Width, work.Width);
+            Left = work.Left + (work.Width - Width) / 2;
+            Top = work.Top + (work.Height - Height) / 2;
         }
     }
 

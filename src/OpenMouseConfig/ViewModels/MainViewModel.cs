@@ -85,7 +85,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public IReadOnlyList<ReportKind> RawReportKinds { get; } = [ReportKind.Feature, ReportKind.Output];
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(ShowUnverifiedBanner), nameof(IsSimulating))]
+    [NotifyPropertyChangedFor(nameof(ShowUnverifiedBanner), nameof(IsSimulating), nameof(UnverifiedBannerText))]
     private DeviceOptionViewModel? _selectedDevice;
 
     [ObservableProperty]
@@ -93,7 +93,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private bool _hasDevices;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsSimulating), nameof(ShowUnverifiedBanner))]
+    [NotifyPropertyChangedFor(nameof(IsSimulating), nameof(ShowUnverifiedBanner), nameof(UnverifiedBannerText))]
     private bool _hasSession;
 
     [ObservableProperty]
@@ -188,8 +188,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public bool ShowUnverifiedBanner => HasSession && SelectedDevice is { IsVerified: false };
 
-    public string UnverifiedBannerText => DryRun
-        ? "This mouse's payloads in devices.json are placeholders or unconfirmed, so dry-run is on: packets appear in the developer console instead of being sent. Compare them with your Wireshark capture, then set \"verified\": true."
+    public string UnverifiedBannerText => IsSimulating
+        ? "This mouse's payloads in devices.json are placeholders or unconfirmed, so nothing is sent: packets appear in the developer console instead. Compare them with your Wireshark capture, then set \"verified\": true."
         : "Dry-run is OFF: packets built from this unconfirmed definition ARE being sent to the mouse. Turn dry-run back on if anything looks wrong.";
 
     public bool CanEdit => !IsReadingBack;
@@ -559,7 +559,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
 
         _settings.PollingRate = value.Value;
-        QueueWrite("pollingRate", ClickDelay, $"Polling rate {value} Hz", (c, s, ct) => c.SetPollingRateAsync(s, ct),
+        QueueWrite(CommandNames.SetPollingRate, "pollingRate", ClickDelay, $"Polling rate {value} Hz", (c, s, ct) => c.SetPollingRateAsync(s, ct),
             (sent, applied) => applied.PollingRate = sent.PollingRate);
     }
 
@@ -571,7 +571,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
 
         _settings.DpiStages[stage.Number - 1] = stage.Dpi;
-        QueueWrite($"dpi{stage.Number}", SliderDelay, $"DPI stage {stage.Number} → {stage.Dpi:N0}", (c, s, ct) => c.SetDpiStageAsync(s, stage.Number, ct),
+        QueueWrite(CommandNames.SetDpiStage, $"dpi{stage.Number}", SliderDelay, $"DPI stage {stage.Number} → {stage.Dpi:N0}", (c, s, ct) => c.SetDpiStageAsync(s, stage.Number, ct),
             (sent, applied) => applied.DpiStages[stage.Number - 1] = sent.DpiStages[stage.Number - 1]);
     }
 
@@ -590,7 +590,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _settings.ActiveStage = stage.Number;
         if (Features.ActiveStage)
         {
-            QueueWrite("activeStage", ClickDelay, $"Active DPI stage {stage.Number}", (c, s, ct) => c.SetActiveDpiStageAsync(s, ct),
+            QueueWrite(CommandNames.SetActiveDpiStage, "activeStage", ClickDelay, $"Active DPI stage {stage.Number}", (c, s, ct) => c.SetActiveDpiStageAsync(s, ct),
                 (sent, applied) => applied.ActiveStage = sent.ActiveStage);
         }
     }
@@ -603,7 +603,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
 
         _settings.Debounce = value;
-        QueueWrite("debounce", SliderDelay, $"Debounce {value} ms", (c, s, ct) => c.SetDebounceAsync(s, ct),
+        QueueWrite(CommandNames.SetDebounce, "debounce", SliderDelay, $"Debounce {value} ms", (c, s, ct) => c.SetDebounceAsync(s, ct),
             (sent, applied) => applied.Debounce = sent.Debounce);
     }
 
@@ -615,7 +615,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
 
         _settings.LiftOffDistance = value.Value;
-        QueueWrite("lod", ClickDelay, $"Lift-off distance {value:0.#} mm", (c, s, ct) => c.SetLiftOffDistanceAsync(s, ct),
+        QueueWrite(CommandNames.SetLiftOffDistance, "lod", ClickDelay, $"Lift-off distance {value:0.#} mm", (c, s, ct) => c.SetLiftOffDistanceAsync(s, ct),
             (sent, applied) => applied.LiftOffDistance = sent.LiftOffDistance);
     }
 
@@ -627,16 +627,18 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
 
         _settings.MotionSync = value;
-        QueueWrite("motionSync", ClickDelay, $"Motion Sync {(value ? "on" : "off")}", (c, s, ct) => c.SetMotionSyncAsync(s, ct),
+        QueueWrite(CommandNames.SetMotionSync, "motionSync", ClickDelay, $"Motion Sync {(value ? "on" : "off")}", (c, s, ct) => c.SetMotionSyncAsync(s, ct),
             (sent, applied) => applied.MotionSync = sent.MotionSync);
     }
 
     /// <summary>
     /// Debounces and sends one setting. A snapshot of the settings is taken when the write fires,
     /// so the background I/O never sees a half-edited object. On real success, <paramref name="commit"/>
-    /// copies the sent value into <see cref="_applied"/>, which is what gets persisted.
+    /// copies the sent value into <see cref="_applied"/>, which is what gets persisted, together with any
+    /// other setting the <paramref name="command"/>'s packet carried.
     /// </summary>
     private void QueueWrite(
+        string command,
         string key,
         TimeSpan delay,
         string label,
@@ -677,6 +679,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 {
                     LastAction = $"{label} — applied";
                     commit(sent, _applied);
+
+                    // A packet can carry more than the edited setting (a "full config" command, or a
+                    // commit command with fields): everything it carried is now on the mouse.
+                    _applied.CopyFrom(sent, controller.Definition.VariablesWrittenBy(command));
                     _store.SetProfile(controller.Definition.Id, _applied);
                 }
             }
@@ -766,6 +772,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
+        // A write queued just before (e.g. typing a DPI value, then clicking "Read from mouse") must hit
+        // the mouse before we read, or the read would revert the UI while the write still goes out.
+        await _writes.FlushAsync();
+        if (_controller != controller)
+        {
+            return;
+        }
+
         IsReadingBack = true;
         try
         {
@@ -782,7 +796,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 _log.Info("UI updated with the mouse's current configuration.");
             }
 
-            _applied = _settings.Clone();
+            // Only what the mouse reported is known to be applied; other settings keep their last known value.
+            _applied.ApplyDeviceValues(values, controller.Definition);
             _store.SetProfile(controller.Definition.Id, _applied);
             LastAction = "Settings read from the mouse";
         }

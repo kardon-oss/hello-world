@@ -136,7 +136,21 @@ public sealed class HidDevice : IHidDevice
         }
     }
 
-    public void Dispose() => _handle.Dispose();
+    public unsafe void Dispose()
+    {
+        // A transfer in flight holds a reference on the handle (see OverlappedTransfer), so disposing
+        // alone would let it run to its timeout. Abort it first; it then completes with
+        // ERROR_OPERATION_ABORTED and the handle closes when that transfer releases it.
+        try
+        {
+            NativeMethods.CancelIoEx(_handle, null);
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+
+        _handle.Dispose();
+    }
 
     /// <summary>
     /// Runs one overlapped ReadFile/WriteFile and waits up to <paramref name="timeout"/>.

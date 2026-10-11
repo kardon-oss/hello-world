@@ -84,6 +84,26 @@ public sealed class DeviceDefinition : DefinitionNode
 
     public bool HasCommand(string name) => TryGetCommand(name, out _);
 
+    /// <summary>
+    /// Variable names a command writes into its packet, plus those of <see cref="CommitCommand"/>
+    /// (which follows every write). Used to know which settings a successful write actually applied.
+    /// </summary>
+    public IReadOnlyList<string> VariablesWrittenBy(string commandName)
+    {
+        var names = new List<string>();
+        if (TryGetCommand(commandName, out var command))
+        {
+            names.AddRange(command.Fields.Select(f => f.Name));
+        }
+
+        if (CommitCommand is { Length: > 0 } commit && TryGetCommand(commit, out var commitCommand))
+        {
+            names.AddRange(commitCommand.Fields.Select(f => f.Name));
+        }
+
+        return names;
+    }
+
     public bool TryGetCommand(string name, [NotNullWhen(true)] out CommandDefinition? command)
     {
         if (Commands.TryGetValue(name, out command))

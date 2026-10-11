@@ -7,25 +7,42 @@ namespace OpenMouseConfig.Services;
 /// </summary>
 public sealed class Debouncer
 {
-    private readonly Dictionary<string, CancellationTokenSource> _pending = [];
+    private readonly Dictionary<string, (CancellationTokenSource Cts, Func<Task> Action)> _pending = [];
 
     /// <summary>Runs <paramref name="action"/> after <paramref name="delay"/> unless <see cref="Run"/> is called again with the same key.</summary>
     public void Run(string key, TimeSpan delay, Func<Task> action)
     {
         if (_pending.Remove(key, out var previous))
         {
-            previous.Cancel();
-            previous.Dispose();
+            previous.Cts.Cancel();
+            previous.Cts.Dispose();
         }
 
         var cts = new CancellationTokenSource();
-        _pending[key] = cts;
+        _pending[key] = (cts, action);
         _ = RunAsync(key, delay, action, cts);
+    }
+
+    /// <summary>Runs every pending action now, in the order they were queued, instead of after its delay.</summary>
+    public async Task FlushAsync()
+    {
+        var pending = _pending.Values.ToList();
+        _pending.Clear();
+        foreach (var (cts, _) in pending)
+        {
+            cts.Cancel();
+            cts.Dispose();
+        }
+
+        foreach (var (_, action) in pending)
+        {
+            await action();
+        }
     }
 
     public void CancelAll()
     {
-        foreach (var cts in _pending.Values)
+        foreach (var (cts, _) in _pending.Values)
         {
             cts.Cancel();
             cts.Dispose();
@@ -55,7 +72,7 @@ public sealed class Debouncer
             return;
         }
 
-        if (_pending.TryGetValue(key, out var current) && current == cts)
+        if (_pending.TryGetValue(key, out var current) && current.Cts == cts)
         {
             _pending.Remove(key);
             cts.Dispose();

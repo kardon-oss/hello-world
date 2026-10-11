@@ -306,8 +306,11 @@ public static class DefinitionValidator
                 errors.Add($"{where}.response.timeoutMs must be positive.");
             }
 
-            // Feature replies have the same size as the feature report, so their fields can be bounds-checked.
-            var responseLength = (response.Type ?? d.Transport.ResponseType) == ResponseKind.Feature ? reportLength : null;
+            // transport.reportLength describes the report commands are SENT with. A feature reply has that
+            // size only when commands are feature reports too (output and feature reports can differ).
+            bool sendsFeature = (command.ReportType ?? d.Transport.ReportType) == ReportKind.Feature;
+            bool readsFeature = (response.Type ?? d.Transport.ResponseType) == ResponseKind.Feature;
+            var responseLength = sendsFeature && readsFeature ? reportLength : null;
             for (int i = 0; i < response.Fields.Count; i++)
             {
                 if (response.Fields[i] is null)

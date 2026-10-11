@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
+using System.Windows.Media;
 
 namespace OpenMouseConfig.Interop;
 
@@ -34,6 +35,54 @@ internal static class WindowInterop
         DwmSetWindowAttribute(hwnd, DwmwaCaptionColor, ref colorRef, sizeof(int)); // ignored on Windows 10
     }
 
+    /// <summary>
+    /// Work area (screen minus taskbar) of the monitor the window is on, in WPF device-independent
+    /// units. <see cref="SystemParameters.WorkArea"/> only describes the primary monitor.
+    /// </summary>
+    public static Rect? GetMonitorWorkArea(Window window)
+    {
+        var hwnd = new WindowInteropHelper(window).Handle;
+        var monitor = MonitorFromWindow(hwnd, MonitorDefaultToNearest);
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        if (hwnd == IntPtr.Zero || monitor == IntPtr.Zero || !GetMonitorInfo(monitor, ref info))
+        {
+            return null;
+        }
+
+        // Pixels → DIPs at the window's DPI (per-monitor aware: the DPI of that monitor).
+        var fromDevice = PresentationSource.FromVisual(window)?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
+        var topLeft = fromDevice.Transform(new Point(info.Work.Left, info.Work.Top));
+        var bottomRight = fromDevice.Transform(new Point(info.Work.Right, info.Work.Bottom));
+        return new Rect(topLeft, bottomRight);
+    }
+
+    private const uint MonitorDefaultToNearest = 2;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MonitorInfo
+    {
+        public int Size;
+        public NativeRect Monitor;
+        public NativeRect Work;
+        public uint Flags;
+    }
+
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "GetMonitorInfoW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
 }
